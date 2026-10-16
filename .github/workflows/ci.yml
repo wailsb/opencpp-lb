@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-gcc,   os: ubuntu-24.04, cc: gcc-14,   cxx: g++-14,     preset: ci }
+          - { name: linux-clang, os: ubuntu-24.04, cc: clang-18, cxx: clang++-18, preset: ci }
+          - { name: linux-asan,  os: ubuntu-24.04, cc: clang-18, cxx: clang++-18, preset: asan }
+          - { name: linux-tsan,  os: ubuntu-24.04, cc: clang-18, cxx: clang++-18, preset: tsan }
+          - { name: macos-clang, os: macos-14,     cc: clang,    cxx: clang++,    preset: ci }
+          - { name: windows-msvc, os: windows-2022, cc: cl,      cxx: cl,         preset: ci }
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Install Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: MSVC developer environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }}
+
+  windows-mingw:
+    name: windows-mingw
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+      - run: cmake --preset ci
+      - run: cmake --build --preset ci
+      - run: ctest --preset ci

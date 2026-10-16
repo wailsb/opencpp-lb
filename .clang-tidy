@@ -1,0 +1,13 @@
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  concurrency-*,
+  performance-*,
+  modernize-*,
+  -modernize-use-trailing-return-type,
+  cppcoreguidelines-avoid-reference-coroutine-parameters,
+  cppcoreguidelines-avoid-capturing-lambda-coroutines,
+  readability-misleading-indentation
+HeaderFilterRegex: '(src|includes)/.*'
+WarningsAsErrors: ''
