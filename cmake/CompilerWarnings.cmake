@@ -1,0 +1,18 @@
+# Applies the project warning set to an INTERFACE target (see ADR-0011)
+
+option(LB_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+
+function(lb_set_warnings target)
+    if(MSVC)
+        set(warnings /W4 /permissive-)
+        if(LB_WARNINGS_AS_ERRORS)
+            list(APPEND warnings /WX)
+        endif()
+    else()
+        set(warnings -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wnon-virtual-dtor -Wold-style-cast)
+        if(LB_WARNINGS_AS_ERRORS)
+            list(APPEND warnings -Werror)
+        endif()
+    endif()
+    target_compile_options(${target} INTERFACE ${warnings})
+endfunction()
