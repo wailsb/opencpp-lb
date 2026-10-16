@@ -604,7 +604,169 @@ Each phase is one or more PRs into `main`. Every phase ends with green CI and no
 
 ---
 
-## 9. Open questions
+## 9. Estimated timeline
+
+Estimates assume **one developer** who knows modern C++ but is new to Asio and coroutines. A *dev-day* is about 6 hours of focused work. The pessimistic column covers the learning curve and debugging that only shows up on one OS.
+
+| Phase | Scope | Optimistic | Expected | Pessimistic | Cumulative (expected) |
+|---|---|---|---|---|---|
+| 0 | Foundations: restructure, deps, CI, GoogleTest | 2 d | 3 d | 5 d | 3 d |
+| 0.5 | **Asio/coroutine spike** (de-risk, throwaway) | 1 d | 2 d | 3 d | 5 d |
+| 1 | Async L4 proxy core | 4 d | 6 d | 9 d | 11 d |
+| 2 | Balancers and backend state | 3 d | 4 d | 6 d | 15 d |
+| 3 | Health checking | 3 d | 4 d | 6 d | 19 d |
+| 4 | Config, hot reload, admin, metrics, drain | 4 d | 6 d | 9 d | 25 d |
+| 5 | Hardening and performance (TLS excluded) | 4 d | 5 d | 8 d | 30 d |
+| **v1.0 total** | | **21 d** | **30 d** | **46 d** | |
+| 5b | TLS termination (optional) | 2 d | 3 d | 5 d | |
+| 6 | L7 HTTP (v1.x) | 8 d | 10 d | 15 d | |
+
+**Calendar time for v1.0 (expected 30 dev-days):**
+
+| Availability | Calendar estimate |
+|---|---|
+| Full-time (5 d/week) | **≈ 6–7 weeks** (≈ 9 weeks pessimistic) |
+| Half-time (~20 h/week) | **≈ 3 months** |
+| Side project (~10 h/week) | **≈ 5–6 months** |
+
+**Milestones that can be demonstrated along the way:**
+- **M1 (end of Phase 1, ~day 11):** real traffic proxied through the LB with curl, a browser or `psql`.
+- **M2 (end of Phase 3, ~day 19):** kill a backend and traffic heals automatically. This is the first "feels like a real LB" demo.
+- **M3 (end of Phase 4, ~day 25):** edit `lb.toml`, reload, and watch Grafana update.
+- **v1.0 (end of Phase 5, ~day 30):** performance numbers published.
+
+**Biggest schedule risks:** coroutine lifetime bugs (Phase 1), and getting IOCP and epoll to behave the same in integration tests (Phases 1 and 3). Phase 0.5 exists to find out about these early.
+
+---
+
+## 10. Getting started: step-by-step workflow
+
+### 10.1 Branching and PR workflow
+
+```
+main ─────●─────────────●────────────●──────────► (always green, releasable)
+           \           / \          /
+            feat/p0-foundations    feat/p1-async-core   ...
+                 (PR, CI green, squash-merge)
+```
+
+- This branch (`wail/feat/new-architecture`) holds the **plan and ADRs only**. Merge it first so the decisions are recorded on `main`.
+- One branch per phase (`wail/feat/p0-foundations`, `wail/feat/p1-async-core`, …) cut from the latest `main`. Phases larger than about 500 changed lines get split into several PRs.
+- Use conventional commits (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `ci:`, `build:`).
+- Definition of done for every PR: CI green on all three OSes, no sanitizer findings, tests added for new behaviour, and the docs/ADR updated if a decision changed.
+
+### 10.2 Day 1: tooling and the plan
+
+1. **Install the missing tools** (Windows dev box):
+   ```powershell
+   winget install LLVM.LLVM          # clang-format, clang-tidy
+   winget install hatoo.oha          # load testing
+   winget install GitHub.cli         # PRs from the terminal
+   ```
+2. **Review this plan** and answer the open questions in §11, because they change the Phase 5 and 6 scope.
+3. **Merge the plan:** `gh pr create --base main --head wail/feat/new-architecture`, then squash-merge.
+
+### 10.3 Days 1–3: Phase 0 (Foundations)
+
+```bash
+git checkout main && git pull
+git checkout -b wail/feat/p0-foundations
+```
+
+**Step 1: restructure the folders** (behaviour unchanged, so the code still builds):
+```bash
+mkdir -p cmake config docs/adr src/{app,config,net,backend,balance,admin,observe} tests/{unit,integration,load}
+git mv tests/unit_tests.cpp tests/unit/legacy_tests.cpp
+```
+Commit: `refactor: adopt target directory layout`.
+
+**Step 2: add `.gitattributes`, `.clang-format` and `.clang-tidy`:**
+```gitattributes
+* text=auto eol=lf
+*.bat text eol=crlf
+```
+Run `clang-format -i` over the sources once, in **its own commit** (`style: apply clang-format`), so later diffs stay readable.
+
+**Step 3: add the CMake modules.**
+- `cmake/CompilerWarnings.cmake`: the warning flags from ADR-11, plus an `LB_WARNINGS_AS_ERRORS` option.
+- `cmake/Sanitizers.cmake`: an `LB_SANITIZE` option (`address,undefined` or `thread`).
+- `cmake/Dependencies.cmake`, for example:
+  ```cmake
+  include(FetchContent)
+  FetchContent_Declare(asio
+      GIT_REPOSITORY https://github.com/chriskohlhoff/asio.git
+      GIT_TAG        asio-1-30-2
+      GIT_SHALLOW    TRUE)
+  FetchContent_Declare(googletest
+      URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.tar.gz
+      FIND_PACKAGE_ARGS NAMES GTest)
+  # spdlog, tomlplusplus, CLI11 follow the same pattern
+  FetchContent_MakeAvailable(asio googletest)
+
+  add_library(asio INTERFACE)
+  target_include_directories(asio SYSTEM INTERFACE ${asio_SOURCE_DIR}/asio/include)
+  target_compile_definitions(asio INTERFACE ASIO_STANDALONE ASIO_NO_DEPRECATED
+                                            $<$<PLATFORM_ID:Windows>:_WIN32_WINNT=0x0A00>)
+  target_link_libraries(asio INTERFACE Threads::Threads $<$<PLATFORM_ID:Windows>:ws2_32 mswsock>)
+  ```
+- Raise `CMAKE_CXX_STANDARD` to 20.
+
+**Step 4: add `CMakePresets.json`** so everyone builds the same way:
+```
+cmake --preset dev          # Debug, Ninja, warnings
+cmake --preset asan         # Debug + ASan/UBSan (Linux/Clang)
+cmake --preset release      # RelWithDebInfo
+cmake --build --preset dev && ctest --preset dev
+```
+Replace the bodies of `scripts/build.sh` and `scripts/tests.bat` with these preset calls.
+
+**Step 5: port the tests to GoogleTest.** Convert the 6 `CHECK`s into `TEST()` cases and register them with `gtest_discover_tests`.
+
+**Step 6: set up CI.** Add `.github/workflows/ci.yml` with the OS/compiler matrix from ADR-11 (build + `ctest` only at this stage). Push and iterate until all jobs are green.
+
+**Step 7: write the ADRs.** Copy each ADR from §4 into `docs/adr/NNNN-title.md`.
+
+**Phase 0 is done when:** CI is green on Windows (MSVC and MinGW), Linux and macOS, and the existing behaviour is unchanged.
+
+### 10.4 Days 4–5: Phase 0.5 (Asio/coroutine spike)
+
+**The goal is to prove the riskiest technology works on every target before building on it.** The code is throwaway, kept in `spikes/echo_proxy.cpp` and excluded from the main build.
+
+1. Write a minimal coroutine **echo server** (accept → read → write back) on one `io_context`. Check it builds with **MinGW GCC 15** (the known risk) and with MSVC.
+2. Turn it into a **hard-coded TCP proxy**: listen on 8080, forward to 9001 using `pipe() && pipe()`.
+3. Point it at a real backend (`python -m http.server 9001`) and `curl` through it.
+4. Run `oha -c 500 -z 20s http://localhost:8080`, and check that nothing crashes and the open-connection count stays stable.
+5. On Linux (WSL is fine), run it under **TSan** and **ASan**.
+6. Write down what you learned (compiler flags, MinGW quirks, IOCP surprises) in `docs/adr/0002-…md`.
+
+**Go/no-go:** if the spike works on MinGW and MSVC, continue with Phase 1. If MinGW coroutines turn out to be unstable, make MSVC the main Windows toolchain and keep MinGW as best-effort (this needs an ADR amendment).
+
+### 10.5 From day 6: Phases 1–5
+
+Each phase follows the same loop:
+
+```
+1. Cut branch from main            git checkout -b wail/feat/pN-<name>
+2. Write integration test first    (it fails: red)
+3. Implement the smallest slice    (unit tests alongside)
+4. Make it green locally           cmake --build --preset dev && ctest --preset dev
+5. Run sanitizers (WSL/Linux)      cmake --preset tsan && ctest --preset tsan
+6. Open PR, CI green on all OSes, self-review the diff
+7. Squash-merge, tag milestone     git tag v0.N.0  (M1 = v0.1.0 ... v1.0.0)
+8. Update this doc's checkboxes and any ADR whose decision changed
+```
+
+Suggested order of work *within* Phase 1, which is the largest:
+1. `WorkerPool` (start/stop N threads) with a unit test that shuts down cleanly.
+2. `Listener`, using a single shared acceptor on all OSes at first. Add `SO_REUSEPORT` afterwards.
+3. `pipe()` and `Session` with a hard-coded backend. Integration test: echo through the proxy.
+4. Connect and idle timeouts. Integration test: an idle client is dropped after the timeout.
+5. Round-robin over a static list, and the CLI flags.
+6. Large-payload, half-close and 1k-connection tests. Then tag **v0.1.0 (M1)**.
+
+---
+
+## 11. Open questions
 
 1. **Deployment target**: is Linux the production OS, which would prioritize `SO_REUSEPORT`, io_uring and splice work, or is Windows a first-class deployment target?
 2. **TLS**: should it be in v1.0 (Phase 5) or deferred? It adds OpenSSL as the only non-trivial dependency.
