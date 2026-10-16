@@ -106,9 +106,9 @@ int main() {
     }
 
     int opt = 1;
-    setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt));
+    setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<char*>(&opt), sizeof(opt));
 
-    if (bind(serverSocket, result->ai_addr, (int)result->ai_addrlen) < 0) {
+    if (bind(serverSocket, result->ai_addr, static_cast<int>(result->ai_addrlen)) < 0) {
         std::cerr << "[ERROR] Bind failed on port " << PORT << std::endl;
         freeaddrinfo(result);
         CLOSE_SOCKET(serverSocket);
@@ -129,7 +129,7 @@ int main() {
         sockaddr_in clientAddr{};
         socklen_t clientAddrLen = sizeof(clientAddr);
 
-        SOCKET clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddr, &clientAddrLen);
+        SOCKET clientSocket = accept(serverSocket, reinterpret_cast<sockaddr*>(&clientAddr), &clientAddrLen);
         if (clientSocket != INVALID_SOCKET) {
             std::cout << "[INFO] Client connection accepted. Pushing to task queue..." << std::endl;
             // Push client socket into thread-safe queue instead of blocking the accept loop

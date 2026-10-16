@@ -1,16 +1,16 @@
 #!/bin/bash
+# Usage: scripts/build.sh [preset]   (default: dev; see CMakePresets.json)
 
 # Exit immediately if a command exits with a non-zero status
 set -e
+cd "$(dirname "$0")/.."
 
-echo "[INFO] Creating build directory..."
-mkdir -p build
-cd build
+PRESET="${1:-dev}"
 
-echo "[INFO] Running CMake..."
-cmake ..
+echo "[INFO] Configuring (preset: $PRESET)..."
+cmake --preset "$PRESET"
 
 echo "[INFO] Compiling project..."
-cmake --build . -j"$(nproc)"
+cmake --build --preset "$PRESET"
 
-echo "[SUCCESS] Build complete! Executable is located at ./build/opencpp_lb"
+echo "[SUCCESS] Build complete! Executable is located at ./build/$PRESET/src/opencpp_lb"
