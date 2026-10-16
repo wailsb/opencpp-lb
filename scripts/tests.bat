@@ -6,7 +6,7 @@ set PRESET=%1
 if "%PRESET%"=="" set PRESET=dev
 
 echo ==========================================
-echo [1/4] Building OpenCPP-LB (preset: %PRESET%)...
+echo [1/3] Building OpenCPP-LB (preset: %PRESET%)...
 echo ==========================================
 cmake --preset %PRESET% > nul || exit /b 1
 cmake --build --preset %PRESET%
@@ -17,7 +17,7 @@ if %errorlevel% neq 0 (
 
 echo.
 echo ==========================================
-echo [2/4] Running tests...
+echo [2/3] Running unit + integration tests...
 echo ==========================================
 ctest --preset %PRESET%
 if %errorlevel% neq 0 (
@@ -27,22 +27,10 @@ if %errorlevel% neq 0 (
 
 echo.
 echo ==========================================
-echo [3/4] Starting Load Balancer (Background)...
+echo [3/3] End-to-end smoke test (Python backends + curl)...
 echo ==========================================
-start /b build\%PRESET%\src\opencpp_lb.exe
-:: Wait for the server socket to bind and start listening
-ping -n 2 127.0.0.1 > nul
-
-echo.
-echo ==========================================
-echo [4/4] Sending Test Request to http://localhost:8080...
-echo ==========================================
-curl -i --max-time 3 http://localhost:8080
-
-taskkill /IM opencpp_lb.exe /F > nul 2>&1
-
-echo.
-echo ==========================================
-echo [TEST] Test complete!
-echo (Check the load balancer logs above for routing/error output).
-echo ==========================================
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke.ps1 -Preset %PRESET%
+if %errorlevel% neq 0 (
+    echo [ERROR] Smoke test failed!
+    exit /b %errorlevel%
+)
