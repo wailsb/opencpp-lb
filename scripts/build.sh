@@ -11,6 +11,6 @@ echo "[INFO] Running CMake..."
 cmake ..
 
 echo "[INFO] Compiling project..."
-make -j$(nproc)
+cmake --build . -j"$(nproc)"
 
 echo "[SUCCESS] Build complete! Executable is located at ./build/opencpp_lb"

@@ -1,100 +1,143 @@
 #include <iostream>
 #include <string>
 #include <cstring>
-
-#ifdef _WIN32
-    #include <winsock2.h>
-    #include <ws2tcpip.h>
-    #pragma comment(lib, "ws2_32.lib")
-    #define CLOSE_SOCKET closesocket
-#else
-    #include <sys/socket.h>
-    #include <netdb.h>
-    #include <arpa/inet.h>
-    #include <unistd.h>
-    #define CLOSE_SOCKET close
-#endif
+#include <thread>
+#include <vector>
+#include "platform.hpp"
+#include "backend.hpp"
+#include "task_queue.hpp"
 
 const std::string PORT = "8080";
 const int BACKLOG = 10;
 
-int main() {
-    std::cout << "[INFO] Initializing Load Balancer with getaddrinfo()..." << std::endl;
+// Reads (and discards) the client's request so closing the socket doesn't reset the connection
+static void drainRequest(SOCKET clientSocket) {
+    char buffer[4096];
+    recv(clientSocket, buffer, sizeof(buffer), 0);
+}
 
-    // 1. Initialize Winsock on Windows
-    #ifdef _WIN32
-        WSADATA wsaData;
-        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-            std::cerr << "[ERROR] WSAStartup failed." << std::endl;
-            return 1;
+// Sends a full response, retrying on partial writes
+static void sendAll(SOCKET clientSocket, const char* data) {
+    size_t remaining = std::strlen(data);
+    while (remaining > 0) {
+        int sent = send(clientSocket, data, static_cast<int>(remaining), 0);
+        if (sent <= 0) return;
+        data += sent;
+        remaining -= static_cast<size_t>(sent);
+    }
+}
+
+// Worker function executed by background threads to process queued clients
+void workerThreadFunction(TaskQueue& taskQueue, BackendPool& pool) {
+    ClientTask task;
+    while (taskQueue.pop(task)) { // Pulls next client from queue safely
+        drainRequest(task.clientSocket);
+
+        // 1. Check if backend pool is empty
+        if (pool.isEmpty()) {
+            std::cerr << "[ERROR] No handlers are up or service is down! Dropping request." << std::endl;
+            sendAll(task.clientSocket, "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\nNo backend handlers available.\n");
+        } else {
+            // 2. Query saturation and select the best backend server
+            BackendServer* target = pool.getBestBackend();
+            if (target == nullptr) {
+                std::cerr << "[ERROR] All backends are unhealthy! Dropping request." << std::endl;
+                sendAll(task.clientSocket, "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\nAll backends down.\n");
+            } else {
+                std::cout << "[ROUTING] Queued client assigned to backend -> "
+                          << target->host << ":" << target->port
+                          << " (Saturation Score: " << target->current_load << ")" << std::endl;
+                // TODO: Next step - Connect to `target` socket and proxy the data!
+            }
         }
-    #endif
 
-    // 2. Setup hints structure for getaddrinfo
-    addrinfo hints{};
-    std::memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;       // IPv4 (use AF_UNSPEC for dual-stack)
-    hints.ai_socktype = SOCK_STREAM; // TCP stream
-    hints.ai_protocol = IPPROTO_TCP; // TCP protocol
-    hints.ai_flags = AI_PASSIVE;     // Server mode (bind to wildcard IP)
+        CLOSE_SOCKET(task.clientSocket);
+    }
+}
 
-    addrinfo* result = nullptr;
+int main() {
+    std::cout << "[INFO] Initializing Load Balancer with Queue & Thread Pool..." << std::endl;
 
-    // 3. Resolve the local address and port
-        int res = getaddrinfo(nullptr, PORT.c_str(), &hints, &result);    if (res != 0) {
-        std::cerr << "[ERROR] getaddrinfo failed: " << res << std::endl;
-        #ifdef _WIN32
-            WSACleanup();
-        #endif
+    if (!initSockets()) {
+        std::cerr << "[ERROR] Socket subsystem initialization failed." << std::endl;
         return 1;
     }
 
-    // 4. Create the server socket using resolved data
+    // Setup backend pool (registering a mock backend so we can test routing)
+    BackendPool pool;
+    pool.addBackend("127.0.0.1", 9001); // Comment out to test the 503 path
+
+    // Setup shared Task Queue
+    TaskQueue taskQueue;
+
+    // Spawn a small worker thread pool (e.g., 4 threads)
+    const int THREAD_POOL_SIZE = 4;
+    std::vector<std::thread> workers;
+    for (int i = 0; i < THREAD_POOL_SIZE; ++i) {
+        workers.emplace_back(workerThreadFunction, std::ref(taskQueue), std::ref(pool));
+    }
+
+    // Stops workers and releases resources on any exit path
+    auto shutdown = [&](int code) {
+        taskQueue.close();
+        for (auto& worker : workers) worker.join();
+        cleanupSockets();
+        return code;
+    };
+
+    // Setup network socket using getaddrinfo
+    addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    hints.ai_flags = AI_PASSIVE;
+
+    addrinfo* result = nullptr;
+    if (getaddrinfo(nullptr, PORT.c_str(), &hints, &result) != 0) {
+        std::cerr << "[ERROR] getaddrinfo failed." << std::endl;
+        return shutdown(1);
+    }
+
     SOCKET serverSocket = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
     if (serverSocket == INVALID_SOCKET) {
         std::cerr << "[ERROR] Failed to create socket." << std::endl;
         freeaddrinfo(result);
-        #ifdef _WIN32
-            WSACleanup();
-        #endif
-        return 1;
+        return shutdown(1);
     }
 
-    // Allow socket reuse
     int opt = 1;
     setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt));
 
-    // 5. Bind the socket using the resolved address structure
     if (bind(serverSocket, result->ai_addr, (int)result->ai_addrlen) < 0) {
         std::cerr << "[ERROR] Bind failed on port " << PORT << std::endl;
         freeaddrinfo(result);
         CLOSE_SOCKET(serverSocket);
-        #ifdef _WIN32
-            WSACleanup();
-        #endif
-        return 1;
+        return shutdown(1);
     }
-
-    // We no longer need the address info list once bound
     freeaddrinfo(result);
 
-    // 6. Listen for incoming connections
     if (listen(serverSocket, BACKLOG) < 0) {
         std::cerr << "[ERROR] Listen failed." << std::endl;
         CLOSE_SOCKET(serverSocket);
-        #ifdef _WIN32
-            WSACleanup();
-        #endif
-        return 1;
+        return shutdown(1);
     }
 
-    std::cout << "[SUCCESS] Server is listening on port " << PORT << " using Microsoft's recommended pattern!" << std::endl;
+    std::cout << "[SUCCESS] Load Balancer listening on port " << PORT << ". Queue and workers active!" << std::endl;
 
-    // Cleanup for now
+    // Main Accept Loop
+    while (true) {
+        sockaddr_in clientAddr{};
+        socklen_t clientAddrLen = sizeof(clientAddr);
+
+        SOCKET clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddr, &clientAddrLen);
+        if (clientSocket != INVALID_SOCKET) {
+            std::cout << "[INFO] Client connection accepted. Pushing to task queue..." << std::endl;
+            // Push client socket into thread-safe queue instead of blocking the accept loop
+            taskQueue.push(clientSocket);
+        }
+    }
+
+    // Cleanup (though loop runs indefinitely unless killed)
     CLOSE_SOCKET(serverSocket);
-    #ifdef _WIN32
-        WSACleanup();
-    #endif
-
-    return 0;
+    return shutdown(0);
 }
