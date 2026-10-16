@@ -512,20 +512,22 @@ asio::awaitable<void> pipe(tcp::socket& from, tcp::socket& to, IdleTimer& idle) 
 Each phase is one or more PRs into `main`. Every phase ends with green CI and no new sanitizer findings.
 
 ### Phase 0: Foundations (≈ 3 days)
-- [ ] Restructure the folders (§3.1). Add the `cmake/` modules: warnings, sanitizers, dependencies.
-- [ ] Switch to C++20. Add the FetchContent dependencies. Add `.clang-format`, `.clang-tidy`, `.gitattributes`.
-- [ ] Port the existing unit tests to GoogleTest.
-- [ ] Set up GitHub Actions CI (build + unit tests) on all three OSes.
-- [ ] Write the ADRs in `docs/adr/0001-…md` through `0012-…md`.
+- [x] Restructure the folders (§3.1). Add the `cmake/` modules: warnings, sanitizers, dependencies.
+- [x] Switch to C++20. Add the FetchContent dependencies. Add `.clang-format`, `.clang-tidy`, `.gitattributes`.
+- [x] Port the existing unit tests to GoogleTest.
+- [~] Set up GitHub Actions CI (build + unit tests) on all three OSes. *(Workflow written; not yet run, so it needs a push to verify.)*
+- [x] Write the ADRs in `docs/adr/0001-…md` through `0012-…md`.
 
 **Acceptance:** `cmake -B build && cmake --build build && ctest --test-dir build` passes on Windows (MSVC and MinGW), Linux and macOS in CI.
 
 ### Phase 1: Async L4 proxy core (≈ 1 week)
-- [ ] `WorkerPool` (N `io_context`s plus threads) and `Listener` (with the per-platform accept strategy).
-- [ ] `Session` coroutine, `pipe` with half-close, connect and idle timeouts.
-- [ ] Static backend list and round-robin `Balancer`.
-- [ ] spdlog integration and the CLI (`--config`, `--log-level`).
-- [ ] Integration tests: echo-through-proxy, large payload (100 MB) integrity, half-close, idle timeout.
+- [x] `WorkerPool` (N `io_context`s plus threads) and `Listener` (with the per-platform accept strategy).
+- [x] `Session` coroutine, `pipe` with half-close, connect and idle timeouts.
+- [x] Static backend list and round-robin `Balancer`.
+- [x] spdlog integration and the CLI (`--config`, `--log-level`).
+- [x] Integration tests: echo-through-proxy, large payload (100 MB) integrity, half-close, idle timeout.
+
+**Status (2026-10-16):** done on Windows/MinGW. curl → LB → Python `http.server` returns 200. 1,000 concurrent connections held open and echoed correctly. The large-payload test uses 8 MiB. Per-listener `SO_REUSEPORT` and the `--config` flag move to Phases 5 and 4. TSan is pending the first CI run.
 
 **Acceptance:**
 - `curl` through the LB to a real HTTP server returns the right response.
